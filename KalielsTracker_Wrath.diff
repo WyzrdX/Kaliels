@@ -1,0 +1,185 @@
+diff --git a/KalielsTracker.lua b/KalielsTracker.lua
+index 7632443..74f15fb 100644
+--- a/KalielsTracker.lua
++++ b/KalielsTracker.lua
+@@ -518,13 +518,6 @@ local function SetHooks()
+ 			return
+ 		end
+ 		KT:SetSize()
+-
+-		-- Set tracking indicator
+-		if KT_GetNumQuestWatches() > 0 then
+-			QuestLogTrackTracking:SetVertexColor(0, 1.0, 0)
+-		else
+-			QuestLogTrackTracking:SetVertexColor(1.0, 0, 0)
+-		end
+ 	end
+ 
+ 	function DEFAULT_OBJECTIVE_TRACKER_MODULE:AddObjective(block, objectiveKey, text, lineType, useFullHeight, dashStyle, colorStyle, adjustForNoText, overrideHeight)  -- RO
+@@ -1194,6 +1187,12 @@ end
+ -- External --
+ --------------
+ 
++-- The original method only exists in GlueXML and Blizzard_StoreUI.
++function ConvertPixelsToUI(pixels, frameScale)
++	local physicalScreenHeight = select(2, GetPhysicalScreenSize());
++	return (pixels * 768.0)/(physicalScreenHeight * frameScale);
++end
++
+ function KT:SetSize()
+ 	local height = 33
+ 	local mod = 0
+@@ -1514,7 +1513,9 @@ function KT:CreateQuestTag(questTag, frequency, suggestedGroup)
+ 			tagIcons = tagIcons..self.CreateQuestTagIcon(nil, 7, 12, 2, 0, 0.055, 0.134, 0.28125, 0.5625)
+ 		else
+ 			texCoords = QuestUtils_GetQuestTagTextureCoords(questTag)
+-			tagIcons = tagIcons..self.CreateQuestTagIcon(nil, 12, 12, 0, 0, unpack(texCoords))
++			if texCoords then
++				tagIcons = tagIcons..self.CreateQuestTagIcon(nil, 12, 12, 0, 0, unpack(texCoords))
++			end
+ 		end
+ 	end
+ 	if frequency > 1 then  -- daily
+@@ -1703,8 +1704,8 @@ function KT:OnInitialize()
+ 	ResetIncompatibleData("0.1.2")
+ 
+ 	-- Blizzard frame resets
+-	QuestWatchFrame:Hide()
+-	QuestWatchFrame.Show = function() end
++	WatchFrame:Hide()
++	WatchFrame.Show = function() end
+ 	OTF.IsUserPlaced = function() return true end
+ 	OTF.KTSetParent = OTF.SetParent
+ 	OTF.SetParent = function() end
+diff --git a/Modules/Addon_Questie.lua b/Modules/Addon_Questie.lua
+index ee8e0a5..9acc9a1 100644
+--- a/Modules/Addon_Questie.lua
++++ b/Modules/Addon_Questie.lua
+@@ -20,7 +20,7 @@ local _G = _G
+ 
+ local db
+ 
+-local QuestieDB, ZoneDB, QuestieMap, QuestieTracker
++local QuestieDB, ZoneDB, QuestieMap, TrackerUtils
+ local isQuestieDBLoaded = false
+ local initTicker
+ 
+@@ -33,7 +33,7 @@ local function GetQuestieData()
+         QuestieDB = QuestieLoader:ImportModule("QuestieDB")
+         ZoneDB = QuestieLoader:ImportModule("ZoneDB")
+         QuestieMap = QuestieLoader:ImportModule("QuestieMap")
+-        QuestieTracker = QuestieLoader:ImportModule("QuestieTracker")
++        TrackerUtils = QuestieLoader:ImportModule("TrackerUtils")
+ 
+         Questie.db.global.trackerEnabled = false
+ 
+@@ -287,7 +287,7 @@ end
+ function M:OnInitialize()
+     _DBG("|cffffff00Init|r - "..self:GetName(), true)
+     db = KT.db.profile
+-    self.isLoaded = (KT:CheckAddOn("Questie", "6.8.2") and db.addonQuestie)
++    self.isLoaded = (KT:CheckAddOn("Questie", "7.0.0") and db.addonQuestie)
+ end
+ 
+ function M:OnEnable()
+@@ -309,7 +309,7 @@ function M:CreateMenu(info, questID)
+     info.text = "Show on Map"
+     info.func = function()
+         if QuestieDB:IsComplete(quest.Id) == 1 then
+-            QuestieTracker.utils:ShowFinisherOnMap(quest)
++            TrackerUtils:ShowFinisherOnMap(quest)
+         else
+             ShowQuestOnMap(quest)
+         end
+@@ -321,7 +321,7 @@ function M:CreateMenu(info, questID)
+         info.func = function()
+             local spawn, zone, name = QuestieMap:GetNearestQuestSpawn(quest)
+             if spawn then
+-                QuestieTracker.utils:SetTomTomTarget(name, zone, spawn[1], spawn[2])
++                TrackerUtils:SetTomTomTarget(name, zone, spawn[1], spawn[2])
+             end
+         end
+         MSA_DropDownMenu_AddButton(info, MSA_DROPDOWN_MENU_LEVEL)
+diff --git a/Modules/QuestLog.lua b/Modules/QuestLog.lua
+index 1b08d84..978dd5d 100644
+--- a/Modules/QuestLog.lua
++++ b/Modules/QuestLog.lua
+@@ -47,26 +47,27 @@ end
+ local function SetHooks()
+ 	-- Quest Log -------------------------------------------------------------------------------------------------------
+ 
+-	QuestLogCollapseAllButton:Hide()
+-	QuestLogCollapseAllButton_OnClick = function() end
+-
+ 	function QuestLogTitleButton_OnClick(self, button)  -- R
+-		if ( self.isHeader ) then
+-			return;
+-		end
+-		local questName = self:GetText();
+-		local questIndex = self:GetID() + FauxScrollFrame_GetOffset(QuestLogListScrollFrame);
++		local questIndex = self:GetID();
+ 		local questID = GetQuestIDFromLogIndex(questIndex);
+ 		if ( IsModifiedClick("CHATLINK") and ChatEdit_GetActiveWindow() ) then
+-			-- Trim leading whitespace and put it into chat
+-			ChatEdit_InsertLink("["..gsub(questName, " *(.*)", "%1").." ("..questID..")]")
++			-- If header then return
++			if ( self.isHeader ) then
++				return;
++			end
++			-- Otherwise trim leading whitespace and put it into chat
++			ChatEdit_InsertLink("["..gsub(self:GetText(), " *(.*)", "%1").." ("..questID..")]");
+ 		elseif ( IsShiftKeyDown() ) then
++			-- If header then return
++			if ( self.isHeader ) then
++				return;
++			end
+ 			-- Shift-click toggles quest-watch on this quest.
+ 			if not db.filterAuto[1] then
+ 				if ( IsQuestWatched(questIndex) ) then
+ 					KT_RemoveQuestWatch(questID);
+ 				else
+-					AutoQuestWatch_Insert(questIndex);
++					_QuestLog_ToggleQuestWatch(questIndex);
+ 				end
+ 			end
+ 		end
+@@ -81,18 +82,20 @@ local function SetHooks()
+ 		return IsQuestInList(questID)
+ 	end
+ 
+-	function AutoQuestWatch_Insert(questIndex, watchTimer)  -- R
+-		if KT_GetNumQuestWatches() < MAX_WATCHABLE_QUESTS then
+-			local questID = GetQuestIDFromLogIndex(questIndex)
+-			KT_AddQuestWatch(questID)
++	function _QuestLog_ToggleQuestWatch(questIndex)  -- R
++		local questID = GetQuestIDFromLogIndex(questIndex)
++		if ( IsQuestWatched(questIndex) ) then
++			KT_RemoveQuestWatch(questID);
++		else
++			if ( KT_GetNumQuestWatches() < MAX_WATCHABLE_QUESTS ) then -- Check this first though it's less likely, otherwise they could make the frame bigger and be disappointed
++				KT_AddQuestWatch(questID);
++			end
+ 		end
+ 	end
+ 
+-	QuestWatch_OnLogin = function() end
+-	QuestWatch_Update = function() end
+-	AutoQuestWatch_CheckDeleted = function() end
+-	AutoQuestWatch_Update = function() end
+-	AutoQuestWatch_OnUpdate = function() end
++	WatchFrame:UnregisterAllEvents()
++	WatchFrame:SetScript("OnEvent", nil)
++	WatchFrame:SetScript("OnUpdate", nil)
+ end
+ 
+ --------------
+@@ -142,7 +145,7 @@ function M:OnEnable()
+ 		local questIndex = GetQuestIndexForWatch(i)
+ 		RemoveQuestWatch(questIndex)
+ 	end
+-	QuestWatch_Update()
++	WatchFrame_Update()
+ 
+ 	SetHooks()
+ end
+\ No newline at end of file
